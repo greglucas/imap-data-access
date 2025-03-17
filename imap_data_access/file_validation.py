@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from abc import abstractmethod
 from datetime import datetime
 from pathlib import Path
@@ -49,11 +50,32 @@ def generate_imap_file_path(filename: str) -> ImapFilePath:
 
 
 class ImapFilePath:
-    """Base class for FilePaths.
+    """Base class for IMAP specific file paths.
 
     Includes shared static methods and provides correct typing for ScienceFilePath,
     AncillaryFilePath, and SPICEFilePath.
     """
+
+    def __init__(self, filename: str | Path):
+        """Initialize the ScienceFilePath object."""
+        self._path = self._build_full_path(filename)
+        self._set_file_attributes(filename)
+
+    @abstractmethod
+    def _build_full_path(self, filename: str | Path) -> Path:
+        """Build the full path for the given filename.
+
+        Parameters
+        ----------
+        filename : str | Path
+            The filename to build the full path for.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def _set_file_attributes(self, filename: str | Path):
+        """Set the file-specific attributes after validating the filename."""
+        raise NotImplementedError
 
     @staticmethod
     def is_valid_date(input_date: str) -> bool:
@@ -94,58 +116,102 @@ class ImapFilePath:
         """
         return input_version == "latest" or re.fullmatch(r"v\d{3}", input_version)
 
-    @abstractmethod
+    @property
+    def path(self) -> Path:
+        """Return the full path of the file."""
+        return self._path
+
     def construct_path(self) -> Path:
         """Construct valid path from class variables and data_dir."""
-        raise NotImplementedError
+        warnings.warn(
+            "This method is deprecated and will be removed in a future"
+            "release. Use the .path property instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.path
+
+    @property
+    def data_dir(self) -> Path:
+        """Get the data directory from the config."""
+        warnings.warn(
+            "This method is deprecated and will be removed in a future"
+            "release. Use imap_data_access.config['DATA_DIR'] instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return imap_data_access.config["DATA_DIR"]
+
+    @property
+    def filename(self) -> str:
+        """Return the filename of the path."""
+        warnings.warn(
+            "This method is deprecated and will be removed in a future"
+            "release. Use .path.name instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.path.name
 
 
 class ScienceFilePath(ImapFilePath):
-    """Class for building and validating filepaths for science files."""
+    """Class to store filepath and file management methods for science files.
+
+    If you have an instance of this class, you can be confident you have a valid
+    science file and generate paths in the correct format. The parent of the file
+    path is set by the "IMAP_DATA_DIR" environment variable, or defaults to "data/"
+
+    Current filename convention:
+    <mission>_<instrument>_<datalevel>_<descriptor>_<start_date>(-<repointing>)
+    _<version>.<extension>
+
+    NOTE: There are no optional parameters. All parameters are required.
+    <mission>: imap
+    <instrument>: codice, glows, hi, hit, idex, lo, mag, swapi, swe, ultra
+    <data_level> : l1a, l1b, l1, l3a and etc.
+    <descriptor>: descriptor stores information specific to instrument. This is
+        decided by each instrument. For L0, "raw" is used.
+    <start_date>: startdate is the earliest date in the data, format: YYYYMMDD
+    <repointing>: This is an optional field. It is used to indicate which
+        repointing the data is from, format: repointXXXXX
+    <version>: This stores the data version for this product, format: vXXX
+    """
 
     class InvalidScienceFileError(Exception):
         """Indicates a bad file type."""
 
         pass
 
-    def __init__(self, filename: str | Path):
-        """Class to store filepath and file management methods for science files.
-
-        If you have an instance of this class, you can be confident you have a valid
-        science file and generate paths in the correct format. The parent of the file
-        path is set by the "IMAP_DATA_DIR" environment variable, or defaults to "data/"
-
-        Current filename convention:
-        <mission>_<instrument>_<datalevel>_<descriptor>_<start_date>(-<repointing>)
-        _<version>.<extension>
-
-        NOTE: There are no optional parameters. All parameters are required.
-        <mission>: imap
-        <instrument>: codice, glows, hi, hit, idex, lo, mag, swapi, swe, ultra
-        <data_level> : l1a, l1b, l1, l3a and etc.
-        <descriptor>: descriptor stores information specific to instrument. This is
-            decided by each instrument. For L0, "raw" is used.
-        <start_date>: startdate is the earliest date in the data, format: YYYYMMDD
-        <repointing>: This is an optional field. It is used to indicate which
-            repointing the data is from, format: repointXXXXX
-        <version>: This stores the data version for this product, format: vXXX
+    def _build_full_path(self, filename: str | Path) -> Path:
+        """Build the full path for the given filename.
 
         Parameters
         ----------
         filename : str | Path
-            Science data filename or file path.
+            The filename to build the full path for.
         """
-        self.filename = Path(filename)
-        self.data_dir = imap_data_access.config["DATA_DIR"]
-
         try:
-            split_filename = self.extract_filename_components(self.filename)
+            split_filename = self.extract_filename_components(filename)
         except ValueError as err:
             raise self.InvalidScienceFileError(
                 f"Invalid filename. Expected file to match format: "
                 f"{imap_data_access.FILENAME_CONVENTION}"
             ) from err
 
+        return (
+            imap_data_access.config["DATA_DIR"]
+            / split_filename["mission"]
+            / split_filename["instrument"]
+            / split_filename["data_level"]
+            / split_filename["start_date"][:4]
+            / split_filename["start_date"][4:6]
+            / Path(filename).name
+        )
+
+    def _set_file_attributes(self, filename: str | Path):
+        """Set the file-specific attributes after validating the filename."""
+        # Extract and assign attributes from the filename components
+        split_filename = self.extract_filename_components(filename)
         self.mission = split_filename["mission"]
         self.instrument = split_filename["instrument"]
         self.data_level = split_filename["data_level"]
@@ -155,6 +221,7 @@ class ScienceFilePath(ImapFilePath):
         self.version = split_filename["version"]
         self.extension = split_filename["extension"]
 
+        # Validate the filename and store the error message (if any)
         self.error_message = self.validate_filename()
         if self.error_message:
             raise self.InvalidScienceFileError(f"{self.error_message}")
@@ -171,11 +238,10 @@ class ScienceFilePath(ImapFilePath):
     ) -> ScienceFilePath:
         """Generate a filename from given inputs and return a ScienceFilePath instance.
 
-        This can be used instead of the __init__ method to make a new instance:
+        Example:
         ```
         science_file_path = ScienceFilePath.generate_from_inputs("mag", "l0", "test",
             "20240213", "v001")
-        full_path = science_file_path.construct_path()
         ```
 
         Parameters
@@ -274,28 +340,6 @@ class ScienceFilePath(ImapFilePath):
 
         return error_message
 
-    def construct_path(self) -> Path:
-        """Construct valid path from class variables and data_dir.
-
-        If data_dir is not None, it is prepended on the returned path.
-
-        expected return:
-        <data_dir>/mission/instrument/data_level/startdate_month/startdate_day/filename
-
-        Returns
-        -------
-        Path
-            Upload path
-        """
-        upload_path = Path(
-            f"{self.mission}/{self.instrument}/{self.data_level}/"
-            f"{self.start_date[:4]}/{self.start_date[4:6]}/{self.filename}"
-        )
-        if self.data_dir:
-            upload_path = self.data_dir / upload_path
-
-        return upload_path
-
     @staticmethod
     def extract_filename_components(filename: str | Path) -> dict:
         """Extract all components from filename. Does not validate instrument or level.
@@ -328,8 +372,7 @@ class ScienceFilePath(ImapFilePath):
             r"_(?P<version>v\d{3})"
             r"\.(?P<extension>cdf|pkts)$"
         )
-        if isinstance(filename, Path):
-            filename = filename.name
+        filename = Path(filename).name
 
         match = re.match(pattern, filename)
         if match is None:
@@ -405,99 +448,94 @@ class SPICEFilePath(ImapFilePath):
 
         pass
 
-    def __init__(self, filename: str | Path):
-        """Class to store filepath and file management methods for SPICE files.
-
-        If you have an instance of this class, you can be confident you have a valid
-        SPICE file and generate paths in the correct format. The parent of the file
-        path is set by the "IMAP_DATA_DIR" environment variable, or defaults to "data/"
-
-        IMAP_DATA_DIR/spice/<subdir>/filename"
+    def _build_full_path(self, filename: str | Path) -> Path:
+        """Build the full path for the given filename.
 
         Parameters
         ----------
         filename : str | Path
-            SPICE data filename or file path.
+            The filename to build the full path for.
         """
-        self.filename = Path(filename)
-        if self.filename.suffix == ".csv":
-            all_suffixes = self.filename.suffixes  # Returns ['.spin', '.csv']
-            self.file_extension = "".join(all_suffixes)  # Returns '.spin.csv'
-        else:
-            self.file_extension = self.filename.suffix
+        all_suffixes = Path(filename).suffixes  # Returns ['.spin', '.csv']
+        file_extension = "".join(all_suffixes)  # Returns '.spin.csv'
 
+        if file_extension not in _SPICE_DIR_MAPPING:
+            raise self.InvalidSPICEFileError(
+                f"Invalid SPICE file. Expected file to have one of the following "
+                f"extensions {list(_SPICE_DIR_MAPPING.keys())}"
+            )
+
+        spice_dir = imap_data_access.config["DATA_DIR"] / "spice"
+        subdir = _SPICE_DIR_MAPPING[file_extension]
+        return spice_dir / subdir / Path(filename).name
+
+    def _set_file_attributes(self, filename: str | Path):
+        """Set the file-specific attributes after validating the filename."""
+        self.file_extension = "".join(Path(filename).suffixes)
         if self.file_extension not in _SPICE_DIR_MAPPING:
             raise self.InvalidSPICEFileError(
                 f"Invalid SPICE file. Expected file to have one of the following "
                 f"extensions {list(_SPICE_DIR_MAPPING.keys())}"
             )
 
-    def construct_path(self) -> Path:
-        """Construct valid path from the class variables and data_dir.
-
-        expected return:
-        <data_dir>/imap/spice/<subdir>/filename
-
-        Returns
-        -------
-        Path
-            Upload path
-        """
-        spice_dir = imap_data_access.config["DATA_DIR"] / "spice"
-        subdir = _SPICE_DIR_MAPPING[self.file_extension]
-        # Use the file suffix to determine the directory structure
-        # IMAP_DATA_DIR/spice/<subdir>/filename
-        return spice_dir / subdir / self.filename
-
 
 class AncillaryFilePath(ImapFilePath):
-    """Class for building and validating filepaths for Ancillary files."""
+    """Class to store filepath and file management methods for Ancillary files.
+
+    If you have an instance of this class, you can be confident you have a valid
+    ancillary file and generate paths in the correct format. The parent of the file
+    path is set by the "IMAP_DATA_DIR" environment variable, or defaults to "data/"
+
+    Current filename convention:
+    "<mission>_<instrument>_<descriptor>_<start_date>(-<end_date>)_
+    <version>.<extension>"
+
+    <mission>: imap
+    <instrument>: codice, glows, hi, hit, idex, lo, mag, swapi, swe, ultra
+    <descriptor>: A descriptive name for the ancillary file which
+                    distinguishes between other ancillary files used by the
+                    instrument.
+    <start_date>: startdate is the earliest date where the file is valid,
+                    format: YYYYMMDD
+    <end_date>: The end time of the validity of the ancillary file,
+                in the format “YYYYMMDD”. This is optional for files, with the
+                understanding that if end_date is not provided, the file is valid
+                until a file with a later start_date and no end_date.
+    <version>: This stores the data version for this product, format: vXXX
+    """
 
     class InvalidAncillaryFileError(Exception):
         """Indicates a bad file type."""
 
         pass
 
-    def __init__(self, filename: str | Path):
-        """Class to store filepath and file management methods for Ancillary files.
-
-        If you have an instance of this class, you can be confident you have a valid
-        ancillary file and generate paths in the correct format. The parent of the file
-        path is set by the "IMAP_DATA_DIR" environment variable, or defaults to "data/"
-
-        Current filename convention:
-        "<mission>_<instrument>_<descriptor>_<start_date>(-<end_date>)_
-        <version>.<extension>"
-
-        <mission>: imap
-        <instrument>: codice, glows, hi, hit, idex, lo, mag, swapi, swe, ultra
-        <descriptor>: A descriptive name for the ancillary file which
-                       distinguishes between other ancillary files used by the
-                       instrument.
-        <start_date>: startdate is the earliest date where the file is valid,
-                     format: YYYYMMDD
-        <end_date>: The end time of the validity of the ancillary file,
-                    in the format “YYYYMMDD”. This is optional for files, with the
-                    understanding that if end_date is not provided, the file is valid
-                    until a file with a later start_date and no end_date.
-        <version>: This stores the data version for this product, format: vXXX
+    def _build_full_path(self, filename: str | Path) -> Path:
+        """Build the full path for the given filename.
 
         Parameters
         ----------
         filename : str | Path
-            Ancillary data filename or file path.
+            The filename to build the full path for.
         """
-        self.filename = Path(filename)
-        self.data_dir = imap_data_access.config["DATA_DIR"]
-
         try:
-            split_filename = self.extract_filename_components(self.filename)
+            split_filename = self.extract_filename_components(filename)
         except ValueError as err:
             raise self.InvalidAncillaryFileError(
                 f"Invalid filename. Expected file to match format: "
                 f"{imap_data_access.ANCILLARY_FILENAME_CONVENTION}"
             ) from err
 
+        return (
+            imap_data_access.config["DATA_DIR"]
+            / split_filename["mission"]
+            / "ancillary"
+            / split_filename["instrument"]
+            / Path(filename).name
+        )
+
+    def _set_file_attributes(self, filename: str | Path):
+        """Set the file-specific attributes after validating the filename."""
+        split_filename = self.extract_filename_components(filename)
         self.mission = split_filename["mission"]
         self.instrument = split_filename["instrument"]
         self.descriptor = split_filename["descriptor"]
@@ -509,6 +547,7 @@ class AncillaryFilePath(ImapFilePath):
         self.error_message = self.validate_filename()
         if self.error_message:
             raise self.InvalidAncillaryFileError(f"{self.error_message}")
+        return self
 
     @classmethod
     def generate_from_inputs(
@@ -522,11 +561,10 @@ class AncillaryFilePath(ImapFilePath):
     ) -> AncillaryFilePath:
         """Generate filename from given inputs and return a AncillaryFilePath instance.
 
-        This can be used instead of the __init__ method to make a new instance:
+        Example:
         ```
         ancillary_file_path = AncillaryFilePath.generate_from_inputs("mag",
         "mag-rotation-matrices", "20240213", "v001")
-        full_path = ancillary_file_path.construct_path()
         ```
 
         Parameters
@@ -616,27 +654,6 @@ class AncillaryFilePath(ImapFilePath):
 
         return error_message
 
-    def construct_path(self) -> Path:
-        """Construct valid path from class variables and data_dir.
-
-        If data_dir is not None, it is prepended on the returned path.
-
-        expected return:
-        <data_dir>/mission/instrument/filename
-
-        Returns
-        -------
-        Path
-            Upload path
-        """
-        upload_path = Path(
-            f"{self.mission}/ancillary/{self.instrument}/{self.filename}"
-        )
-        if self.data_dir:
-            upload_path = self.data_dir / upload_path
-
-        return upload_path
-
     @staticmethod
     def extract_filename_components(filename: str | Path) -> dict:
         """Extract all components from filename. Does not validate instrument or level.
@@ -668,8 +685,7 @@ class AncillaryFilePath(ImapFilePath):
             r"_(?P<version>v\d{3})"
             r"\.(?P<extension>cdf|csv|json)$"
         )
-        if isinstance(filename, Path):
-            filename = filename.name
+        filename = Path(filename).name
 
         match = re.match(pattern, filename)
         if match is None:
