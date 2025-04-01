@@ -9,6 +9,7 @@ from imap_data_access.webpoda import (
     INSTRUMENT_APIDS,
     _add_webpoda_headers,
     download_daily_data,
+    get_list_of_contact_times,
     get_packet_binary_data_sctime,
     get_packet_times_ert,
 )
@@ -96,3 +97,32 @@ def test_download_daily_data(
         n_apids = len(INSTRUMENT_APIDS[instrument])
         assert expected_file_path.read_bytes() == b"\x00\x01\x02\x03" * n_apids
         assert mock_upload.called is upload_to_server
+
+
+@patch("imap_data_access.webpoda._get_url_response")
+def test_get_mission_contacts(mock_get_response):
+    mock_response = MagicMock()
+    mock_response.read.return_value = (
+        b"S/C     Year/DOY      AOS         LOS        STA      Orbit    SOE/TR    Local Time (UTC -0600)\n"  # noqa: E501
+        b"IMAP    2025/093    08:40:00    12:25:00    DSS-25    -----    ------    Thu Apr 03 02:40AM    \n"  # noqa: E501
+        b"IMAP    2025/093    08:40:00    12:25:00    DSS-25    -----    ------    Thu Apr 03 02:40AM    \n"  # noqa: E501
+        # Contact lasting across a day boundary
+        b"IMAP    2025/094    08:40:00    --------    DSS-25    -----    ------    Thu Apr 03 02:40AM    \n"  # noqa: E501
+        b"IMAP    2025/095    --------    12:25:00    DSS-25    -----    ------    Thu Apr 03 02:40AM    \n"  # noqa: E501
+    )
+    mock_get_response.return_value.__enter__.return_value = mock_response
+
+    contacts = get_list_of_contact_times()
+    assert len(contacts) == 3
+    assert contacts[0] == [
+        datetime.datetime(2025, 4, 3, 8, 40),
+        datetime.datetime(2025, 4, 3, 12, 25),
+    ]
+    assert contacts[1] == [
+        datetime.datetime(2025, 4, 3, 8, 40),
+        datetime.datetime(2025, 4, 3, 12, 25),
+    ]
+    assert contacts[2] == [
+        datetime.datetime(2025, 4, 4, 8, 40),
+        datetime.datetime(2025, 4, 5, 12, 25),
+    ]

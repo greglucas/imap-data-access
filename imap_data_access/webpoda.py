@@ -340,3 +340,69 @@ def download_daily_data(
         if upload_to_server:
             # Upload the data to the server
             imap_data_access.upload(path)
+
+
+def get_list_of_contact_times():
+    """Get a list of start/stop time for contacts during the mission.
+
+    This function downloads the mission contact schedule using the same
+    credentials as webpoda and parses it to obtain the start and stop
+    times for each contact. The contact times are returned as a list of
+    lists, where each inner list contains the start and stop time for
+    acquisition and loss of signal, respectively.
+    The start and stop times are in UTC and are represented as
+    datetime.datetime objects.
+
+    Notes
+    -----
+    The contact schedule is available at:
+    https://lasp.colorado.edu/data/store/web-imap-files/contact-schedules/
+
+    Returns
+    -------
+    list[list[datetime.datetime, datetime.datetime]]
+        A list of lists, where each inner list contains the start and stop
+        times for acquisition and loss of signal, respectively.
+    """
+    url = (
+        "https://lasp.colorado.edu/data/store/web-imap-files/contact-schedules/"
+        "mission_contacts_summary.txt"
+    )
+    request = urllib.request.Request(url, method="GET")
+    request = _add_webpoda_headers(request)
+    with _get_url_response(request) as response:
+        data = response.read().decode().split("\n")
+
+    contact_times = []
+    for line in data:
+        if not line.startswith("IMAP"):
+            # Skip the header lines
+            continue
+
+        # Parse the date (YYYY/DOY)
+        date = datetime.datetime.strptime(line[8:16], "%Y/%j")
+
+        # Parse signal acquisition time (AOS)
+        try:
+            signal_acquisition_time = datetime.datetime.strptime(
+                line[20:28], "%H:%M:%S"
+            )
+            signal_acquisition_time = datetime.datetime.combine(
+                date, signal_acquisition_time.time()
+            )
+            contact_times.append([signal_acquisition_time, None])
+        except ValueError:
+            # There is no acquisition time, only a loss of signal
+            pass
+
+        # Parse loss of signal time (LOS)
+        try:
+            signal_loss_time = datetime.datetime.strptime(line[32:40], "%H:%M:%S")
+            signal_loss_time = datetime.datetime.combine(date, signal_loss_time.time())
+            # Update the previous entry with the LOS time
+            contact_times[-1][1] = signal_loss_time
+        except ValueError:
+            # There was no LOS time, only an acquisition
+            pass
+
+    return contact_times
